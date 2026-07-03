@@ -19,6 +19,11 @@ application {
     mainClass.set("cc.gnode.winpen.spike.MainKt")
 }
 
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+    standardOutput = System.out
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21
