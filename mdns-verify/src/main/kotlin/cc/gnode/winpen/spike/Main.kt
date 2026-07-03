@@ -44,48 +44,44 @@ interface ResolveCompleteCallback : Callback {
     fun invoke(status: Int, pQueryContext: Pointer?, pInstance: Pointer?)
 }
 
-// ===== Request structures =====
+// ===== Request structures (matching Windows SDK windns.h) =====
+// Win64 layout: DWORD(4) + pad(4) + PWSTR(8) + WORD(2) + pad(6) + PVOID(8) + fnptr(8) + PDNS_RECORD(8) = 48 bytes
 
 class DnsServiceRegisterRequest : Structure() {
-    @JvmField var version: Int = 0                     // DWORD
-    @JvmField var interfaceName: Pointer? = null       // PWSTR
-    @JvmField var type: Short = 0                      // WORD
-    @JvmField var pQueryContext: Pointer? = null       // PVOID
-    @JvmField var pRegisterCompletion: Pointer? = null // function pointer
-    @JvmField var pDnsRecord: Pointer? = null          // PDNS_RECORD
-    @JvmField var interfaceHandle: Pointer? = null     // HINTERFACE
+    @JvmField var version: Int = 0                     // DWORD   offset 0
+    @JvmField var interfaceName: Pointer? = null       // PWSTR   offset 8 (4 bytes padding before)
+    @JvmField var type: Short = 0                      // WORD    offset 16
+    @JvmField var pQueryContext: Pointer? = null       // PVOID   offset 24 (6 bytes padding before)
+    @JvmField var pRegisterCompletion: Pointer? = null // fnptr   offset 32
+    @JvmField var pDnsRecord: Pointer? = null          // PDNS_RECORD offset 40
 
     override fun getFieldOrder() = listOf(
         "version", "interfaceName", "type", "pQueryContext",
-        "pRegisterCompletion", "pDnsRecord", "interfaceHandle"
+        "pRegisterCompletion", "pDnsRecord"
     )
 }
 
+// Win64 layout: DWORD(4) + pad(4) + PWSTR(8) + PVOID(8) + fnptr(8) = 32 bytes
 class DnsServiceBrowseRequest : Structure() {
-    @JvmField var version: Int = 0                     // DWORD
-    @JvmField var interfaceName: Pointer? = null       // PWSTR
-    @JvmField var interfaceGuid: ByteArray = ByteArray(16) // GUID
-    @JvmField var queryName: Pointer? = null           // PWSTR
-    @JvmField var pBrowseCallback: Pointer? = null     // function pointer
-    @JvmField var pQueryContext: Pointer? = null       // PVOID
+    @JvmField var version: Int = 0                     // DWORD   offset 0
+    @JvmField var interfaceName: Pointer? = null       // PWSTR   offset 8
+    @JvmField var pQueryContext: Pointer? = null       // PVOID   offset 16
+    @JvmField var pBrowseCallback: Pointer? = null     // fnptr   offset 24
 
     override fun getFieldOrder() = listOf(
-        "version", "interfaceName", "interfaceGuid",
-        "queryName", "pBrowseCallback", "pQueryContext"
+        "version", "interfaceName", "pQueryContext", "pBrowseCallback"
     )
 }
 
+// Win64 layout: same as browse = 32 bytes
 class DnsServiceResolveRequest : Structure() {
-    @JvmField var version: Int = 0                     // DWORD
-    @JvmField var interfaceName: Pointer? = null       // PWSTR
-    @JvmField var interfaceGuid: ByteArray = ByteArray(16) // GUID
-    @JvmField var queryName: Pointer? = null           // PWSTR
-    @JvmField var pResolveCompletion: Pointer? = null  // function pointer
-    @JvmField var pQueryContext: Pointer? = null       // PVOID
+    @JvmField var version: Int = 0                     // DWORD   offset 0
+    @JvmField var interfaceName: Pointer? = null       // PWSTR   offset 8
+    @JvmField var pQueryContext: Pointer? = null       // PVOID   offset 16
+    @JvmField var pResolveCompletion: Pointer? = null  // fnptr   offset 24
 
     override fun getFieldOrder() = listOf(
-        "version", "interfaceName", "interfaceGuid",
-        "queryName", "pResolveCompletion", "pQueryContext"
+        "version", "interfaceName", "pQueryContext", "pResolveCompletion"
     )
 }
 
@@ -133,15 +129,31 @@ fun getComputerName(): String {
 }
 
 // ===== DNS Record builders (raw memory) =====
-// DNS_RECORDW layout on Win64 (8-byte packing):
-//   pNext:       offset 0,  8 bytes
-//   pName:       offset 8,  8 bytes
+//
+// DNS_RECORDW layout on Win64:
+//   pNext:       offset 0,  8 bytes (pointer)
+//   pName:       offset 8,  8 bytes (pointer)
 //   wType:       offset 16, 2 bytes
 //   wDataLength: offset 18, 2 bytes
-//   [padding]:   offset 20, 4 bytes
-//   Data union:  offset 24, variable
-//   dwTtl:       after union (leave 0)
-//   dwReserved:  after dwTtl (leave 0)
+//   Flags:       offset 20, 4 bytes (union DW/FLAGS)
+//   dwTtl:       offset 24, 4 bytes
+//   dwReserved:  offset 28, 4 bytes
+//   Data:        offset 32, variable (union)
+//
+// DNS_SRV_DATAW layout on Win64:
+//   pNameTarget: offset 0,  8 bytes (pointer)
+//   wPriority:   offset 8,  2 bytes
+//   wWeight:     offset 10, 2 bytes
+//   wPort:       offset 12, 2 bytes
+//   (padding):   offset 14, 2 bytes
+//   pReserved:   offset 16, 8 bytes (pointer)
+//   Total: 24 bytes
+//
+// DNS_TXT_DATAW layout on Win64:
+//   dwStringCount:  offset 0,  4 bytes
+//   (padding):      offset 4,  4 bytes
+//   pStringArray[]: offset 8+, 8 bytes each (pointer)
+//   Total: 8 + count * 8 bytes
 
 fun buildSrvRecord(
     instanceFullName: String,
@@ -154,18 +166,18 @@ fun buildSrvRecord(
 
     val nameMem = allocWStr(instanceFullName)
     refs.add(nameMem)
-    mem.setPointer(8, nameMem)
-    mem.setShort(16, DNS_TYPE_SRV.toShort())
-    mem.setShort(18, 24)  // sizeof(DNS_SRV_DATA) on Win64
+    mem.setPointer(8, nameMem)                   // pName
+    mem.setShort(16, DNS_TYPE_SRV.toShort())     // wType
+    mem.setShort(18, 24)                          // wDataLength = sizeof(DNS_SRV_DATAW) = 24
 
-    // SRV data at offset 24
+    // Data starts at offset 32
     val targetMem = allocWStr(hostName)
     refs.add(targetMem)
-    mem.setPointer(24, targetMem)       // pNameTarget
-    mem.setShort(32, 0)                 // wPriority
-    mem.setShort(34, 0)                 // wWeight
-    mem.setShort(36, port.toShort())    // wPort
-    // pReserved = null (already cleared)
+    mem.setPointer(32, targetMem)                // Data.SRV.pNameTarget
+    mem.setShort(40, 0)                          // Data.SRV.wPriority
+    mem.setShort(42, 0)                          // Data.SRV.wWeight
+    mem.setShort(44, port.toShort())             // Data.SRV.wPort
+    // Data.SRV.pReserved at offset 48 = null (already cleared)
 
     return mem
 }
@@ -175,24 +187,29 @@ fun buildTxtRecord(
     txtStrings: List<String>,
     refs: MutableList<Memory>
 ): Memory {
+    val count = txtStrings.size
+    val txtDataSize = 8 + count * 8              // DNS_TXT_DATAW size on Win64
+
     val mem = Memory(80L)
     mem.clear()
 
     val nameMem = allocWStr(instanceFullName)
     refs.add(nameMem)
-    mem.setPointer(8, nameMem)
-    mem.setShort(16, DNS_TYPE_TEXT.toShort())
+    mem.setPointer(8, nameMem)                   // pName
+    mem.setShort(16, DNS_TYPE_TEXT.toShort())    // wType
+    mem.setShort(18, txtDataSize.toShort())      // wDataLength
 
-    val count = txtStrings.size
-    // DNS_TXT_DATAW: dwStringCount(4) + padding(4) + count * pointer(8)
-    mem.setShort(18, (8 + count * 8).toShort())
-
-    mem.setInt(24, count)  // dwStringCount
+    // Data starts at offset 32
+    // DNS_TXT_DATAW:
+    //   dwStringCount at offset 32
+    //   pStringArray[0] at offset 40
+    //   pStringArray[1] at offset 48
+    mem.setInt(32, count)                         // Data.TXT.dwStringCount
 
     txtStrings.forEachIndexed { i, str ->
         val strMem = allocWStr(str)
         refs.add(strMem)
-        mem.setPointer((32 + i * 8).toLong(), strMem)
+        mem.setPointer((40 + i * 8).toLong(), strMem)  // Data.TXT.pStringArray[i]
     }
 
     return mem
@@ -201,7 +218,7 @@ fun buildTxtRecord(
 // ===== Main =====
 
 fun main() {
-    println("$TAG === WinPen mDNS Spike ===")
+    println("$TAG === WinPen mDNS Spike v2 ===")
     println()
 
     val computerName = getComputerName()
@@ -221,7 +238,6 @@ fun main() {
     // ===== Register =====
     println("$TAG --- Registration ---")
     println("$TAG [OBSERVE] Watch for Windows Firewall popup!")
-    println("$TAG [OBSERVE] If popup appears, note which port it mentions (5353 vs 19820)")
     println()
 
     val srvRecord = buildSrvRecord(instanceFullName, hostName, TCP_PORT, refs)
@@ -255,53 +271,52 @@ fun main() {
     }
     callbacks.add(registerCallback)
 
+    // Try Type=0 (DNS_SERVICE_REGISTER_REQUEST_WORD_TYPE per SDK)
     val registerRequest = DnsServiceRegisterRequest().apply {
         version = DNS_QUERY_REQUEST_VERSION1
         interfaceName = null
-        type = 1  // per MS docs: DNS_QUERY_REQUEST_VERSION1
+        type = 0
         pQueryContext = null
         pRegisterCompletion = CallbackReference.getFunctionPointer(registerCallback)
         pDnsRecord = srvRecord
-        interfaceHandle = null
     }
     registerRequest.write()
 
-    println("$TAG Calling DnsServiceRegister...")
+    println("$TAG Calling DnsServiceRegister(Type=0)...")
     var regResult = DnsApi.INSTANCE.DnsServiceRegister(registerRequest, null)
     println("$TAG DnsServiceRegister returned: $regResult (0=success)")
 
     if (regResult != ERROR_SUCCESS) {
-        println("$TAG Type=1 failed, trying Type=0...")
-        registerRequest.type = 0
+        println("$TAG Type=0 failed, trying Type=1...")
+        registerRequest.type = 1
         registerRequest.write()
         regResult = DnsApi.INSTANCE.DnsServiceRegister(registerRequest, null)
-        println("$TAG DnsServiceRegister(Type=0) returned: $regResult")
+        println("$TAG DnsServiceRegister(Type=1) returned: $regResult")
     }
 
     if (regResult == ERROR_SUCCESS) {
+        println("$TAG Waiting for register callback (5s)...")
         if (!registerLatch.await(5, TimeUnit.SECONDS)) {
             println("$TAG WARNING: Register callback not received within 5s")
-            println("$TAG (may be normal — service might register silently)")
+            println("$TAG (service may still be registered — check from another device)")
         }
     }
 
     println()
 
-    // ===== Browse =====
+    // ===== Browse (self-discovery test) =====
     println("$TAG --- Browse ---")
-
-    val browseQuery = "$SERVICE_TYPE.$DOMAIN"
-    val browseQueryMem = allocWStr(browseQuery)
-    refs.add(browseQueryMem)
+    println("$TAG NOTE: DnsServiceBrowse has no query name field in the struct.")
+    println("$TAG It browses for ALL DNS-SD services. We'll filter for _winpen._tcp in callback.")
 
     val browseCallback = object : BrowseCallback {
         override fun invoke(status: Int, pQueryContext: Pointer?, pDnsRecord: Pointer?) {
+            println("$TAG Browse callback: status=$status")
+
             if (pDnsRecord == null) {
-                println("$TAG Browse: complete (end of results)")
+                println("$TAG   (end of results)")
                 return
             }
-
-            println("$TAG Browse callback: status=$status")
 
             var recordPtr: Pointer? = pDnsRecord
             while (recordPtr != null) {
@@ -311,10 +326,15 @@ fun main() {
 
                 when (wType) {
                     DNS_TYPE_PTR -> {
-                        val pNameHost = recordPtr.getPointer(24)
+                        // PTR data at offset 32: pNameHost (pointer)
+                        val pNameHost = recordPtr.getPointer(32)
                         val hostName = pNameHost?.getWideString(0) ?: "?"
-                        println("$TAG   PTR: $name -> $hostName")
-                        resolveService(hostName, refs, callbacks)
+                        if (name.contains("_winpen")) {
+                            println("$TAG   PTR: $name -> $hostName  *** WINPEN ***")
+                            resolveService(hostName, refs, callbacks)
+                        } else {
+                            println("$TAG   PTR: $name -> $hostName  (other service)")
+                        }
                     }
                     else -> {
                         println("$TAG   Type $wType: $name")
@@ -332,14 +352,12 @@ fun main() {
     val browseRequest = DnsServiceBrowseRequest().apply {
         version = DNS_QUERY_REQUEST_VERSION1
         interfaceName = null
-        interfaceGuid = ByteArray(16)
-        queryName = browseQueryMem
-        pBrowseCallback = CallbackReference.getFunctionPointer(browseCallback)
         pQueryContext = null
+        pBrowseCallback = CallbackReference.getFunctionPointer(browseCallback)
     }
     browseRequest.write()
 
-    println("$TAG Browsing for $browseQuery...")
+    println("$TAG Browsing for DNS-SD services...")
     val browseResult = DnsApi.INSTANCE.DnsServiceBrowse(browseRequest, null)
     println("$TAG DnsServiceBrowse returned: $browseResult (0=success)")
 
@@ -360,7 +378,8 @@ fun main() {
 
     // ===== Deregister =====
     println("$TAG Deregistering...")
-    registerRequest.type = 1 // DnsServiceDeRegisterRequest
+    // For deregister, Type=1 per MS docs (DNS_SERVICE_DEREGISTER_REQUEST_WORD_TYPE)
+    registerRequest.type = 1
     registerRequest.write()
     DnsApi.INSTANCE.DnsServiceDeRegister(registerRequest, null)
 
@@ -431,22 +450,24 @@ fun resolveService(
     }
     callbacks.add(resolveCallback)
 
+    // DnsServiceResolveRequest has no query name field.
+    // The instance name to resolve might need to go through InterfaceName
+    // or there may be additional fields not in the MinGW headers.
+    // Try setting interfaceName to the instance name as a workaround.
     val queryMem = allocWStr(instanceName)
     refs.add(queryMem)
 
     val resolveRequest = DnsServiceResolveRequest().apply {
         version = DNS_QUERY_REQUEST_VERSION1
-        interfaceName = null
-        interfaceGuid = ByteArray(16)
-        queryName = queryMem
-        pResolveCompletion = CallbackReference.getFunctionPointer(resolveCallback)
+        interfaceName = queryMem  // try using instance name here
         pQueryContext = null
+        pResolveCompletion = CallbackReference.getFunctionPointer(resolveCallback)
     }
     resolveRequest.write()
 
     val result = DnsApi.INSTANCE.DnsServiceResolve(resolveRequest, null)
     if (result != ERROR_SUCCESS) {
-        println("$TAG   DnsServiceResolve failed: $result")
+        println("$TAG   DnsServiceResolve returned: $result (0=success)")
     }
 
     resolveLatch.await(5, TimeUnit.SECONDS)
