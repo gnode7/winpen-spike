@@ -384,7 +384,13 @@ fun main() {
     println("$TAG BrowseRequest struct size: ${browseRequest.size()}")
     println("$TAG BrowseRequest fields: ${browseRequest.toString()}")
 
-    val browseResult = DnsApi.INSTANCE.DnsServiceBrowse(browseRequest, null)
+    // DNS_SERVICE_CANCEL: struct with single PVOID (8 bytes on Win64)
+    // DnsServiceBrowse requires non-null pCancel (unlike DnsServiceRegister)
+    val browseCancel = Memory(8)
+    browseCancel.clear()
+    keepAlive.add(browseCancel)
+
+    val browseResult = DnsApi.INSTANCE.DnsServiceBrowse(browseRequest, browseCancel)
     println("$TAG DnsServiceBrowse returned: $browseResult (9506=PENDING=success)")
 
     if (browseResult == DNS_REQUEST_PENDING) {
@@ -448,7 +454,12 @@ fun main() {
         }
         resolveRequest.write()
 
-        val resolveResult = DnsApi.INSTANCE.DnsServiceResolve(resolveRequest, null)
+        // DNS_SERVICE_CANCEL required for DnsServiceResolve too
+        val resolveCancel = Memory(8)
+        resolveCancel.clear()
+        keepAlive.add(resolveCancel)
+
+        val resolveResult = DnsApi.INSTANCE.DnsServiceResolve(resolveRequest, resolveCancel)
         println("$TAG DnsServiceResolve returned: $resolveResult (9506=PENDING=success)")
 
         if (resolveResult == DNS_REQUEST_PENDING) {
