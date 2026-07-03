@@ -13,6 +13,7 @@ private const val INSTANCE_NAME = "WinPen-Spike"
 private const val TCP_PORT = 19820
 private const val DNS_QUERY_REQUEST_VERSION1 = 1
 private const val ERROR_SUCCESS = 0
+private const val DNS_REQUEST_PENDING = 9506
 
 // ===== JNA Interface for dnsapi.dll =====
 interface DnsApi : Library {
@@ -291,12 +292,14 @@ fun main() {
 
     println("$TAG Calling DnsServiceRegister...")
     val regResult = DnsApi.INSTANCE.DnsServiceRegister(regRequest, null)
-    println("$TAG DnsServiceRegister returned: $regResult (0=success)")
+    println("$TAG DnsServiceRegister returned: $regResult (9506=PENDING=success)")
 
-    if (regResult == ERROR_SUCCESS) {
+    if (regResult == DNS_REQUEST_PENDING) {
         println("$TAG Waiting for register callback (5s timeout)...")
         regLatch.await(5, TimeUnit.SECONDS)
         println("$TAG Register status: $regStatus")
+    } else {
+        println("$TAG Register failed immediately. GetLastError may have info.")
     }
 
     println()
@@ -377,10 +380,14 @@ fun main() {
     }
     browseRequest.write()
 
-    val browseResult = DnsApi.INSTANCE.DnsServiceBrowse(browseRequest, null)
-    println("$TAG DnsServiceBrowse returned: $browseResult (0=success)")
+    // Debug: print struct layout
+    println("$TAG BrowseRequest struct size: ${browseRequest.size()}")
+    println("$TAG BrowseRequest fields: ${browseRequest.toString()}")
 
-    if (browseResult == ERROR_SUCCESS) {
+    val browseResult = DnsApi.INSTANCE.DnsServiceBrowse(browseRequest, null)
+    println("$TAG DnsServiceBrowse returned: $browseResult (9506=PENDING=success)")
+
+    if (browseResult == DNS_REQUEST_PENDING) {
         println("$TAG Waiting for browse callback (5s timeout)...")
         browseLatch.await(5, TimeUnit.SECONDS)
     }
@@ -388,7 +395,7 @@ fun main() {
     println()
 
     // -------- 3. Resolve --------
-    if (regStatus == ERROR_SUCCESS) {
+    if (regStatus == ERROR_SUCCESS || regStatus == DNS_REQUEST_PENDING) {
         println("$TAG --- Resolve ---")
         println("$TAG Resolving $instanceFullName ...")
 
@@ -442,9 +449,9 @@ fun main() {
         resolveRequest.write()
 
         val resolveResult = DnsApi.INSTANCE.DnsServiceResolve(resolveRequest, null)
-        println("$TAG DnsServiceResolve returned: $resolveResult (0=success)")
+        println("$TAG DnsServiceResolve returned: $resolveResult (9506=PENDING=success)")
 
-        if (resolveResult == ERROR_SUCCESS) {
+        if (resolveResult == DNS_REQUEST_PENDING) {
             println("$TAG Waiting for resolve callback (5s timeout)...")
             resolveLatch.await(5, TimeUnit.SECONDS)
         }
