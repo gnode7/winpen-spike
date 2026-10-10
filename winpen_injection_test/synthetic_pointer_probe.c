@@ -182,6 +182,7 @@ static DWORD g_frameDelayMs = 8;     /* > 0.1 ms injection window, keeps
                                         path below still handles it */
 static UINT32 g_nextPointerId = 0;
 static BOOL   g_useQpc        = FALSE;
+static BOOL   g_rawCoord      = FALSE;  /* --raw: skip primary-origin conversion */
 static LARGE_INTEGER g_qpcLast;
 
 /* ------------------------------------------------------------------ */
@@ -461,11 +462,17 @@ static int run_origin_experiment(void)
     void* dev = pCreate(g_pointerType, 1, g_feedback);
     if (!dev) die("CreateSyntheticPointerDevice", GetLastError());
 
-    printf("\n  injecting ONE click at coordinate (5,5) of the virtual screen ...\n");
-    printf("  watch where the touch/pen visualization circle appears:\n");
-    printf("    - on the PRIMARY monitor upper-left  -> origin = primary monitor (0,0)   [expected]\n");
-    printf("    - on a LEFT/ABOVE secondary monitor  -> origin = bounding-box upper-left\n");
-    printf("                                             (then SM_X/YVIRTUALSCREEN offsets must be added)\n");
+    printf("\n  injecting ONE click at coordinate (5,5) ...\n");
+    printf("  VERDICT (measured on real HW 2026-10-10, secondary on the left):\n");
+    printf("    circle appeared on the LEFT secondary upper-left ->\n");
+    printf("    origin = virtual-screen bounding-box upper-left (SM_X/YVIRTUALSCREEN),\n");
+    printf("    NOT the primary-monitor (0,0). Injected coords are physical-pixel\n");
+    printf("    offsets from the bounding-box corner, DPI-awareness independent.\n");
+    printf("    Conversion: inject_xy = target_xy(primary-origin) - (SM_XVIRT, SM_YVIRT)\n");
+    printf("    (single-monitor: both semantics coincide, SM offsets = 0)\n");
+    printf("  expected circle (primary-origin coords): (%ld, %ld)\n",
+           (long)(5 + GetSystemMetrics(SM_XVIRTUALSCREEN)),
+           (long)(5 + GetSystemMetrics(SM_YVIRTUALSCREEN)));
 
     Sleep(800);
     BOOL ok = inject_single_click(dev, 5, 5);
@@ -529,6 +536,22 @@ static int run_tool(int mode, LONG* pts, int moveFrames)
 {
     void* dev = pCreate(g_pointerType, 1, g_feedback);
     if (!dev) die("CreateSyntheticPointerDevice", GetLastError());
+
+    /* Measured verdict (2026-10-10): injected coords are physical-pixel
+     * offsets from the virtual-screen BOUNDING-BOX upper-left, i.e.
+     * primary-origin coords minus (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN).
+     * Tool input X/Y below is in the familiar primary-origin screen space
+     * (same space as EnumDisplayMonitors / GetCursorPos), so we convert;
+     * pass --raw to feed the API raw bounding-box-relative values.      */
+    if (!g_rawCoord) {
+        LONG smx = (LONG)GetSystemMetrics(SM_XVIRTUALSCREEN);
+        LONG smy = (LONG)GetSystemMetrics(SM_YVIRTUALSCREEN);
+        printf("[convert] primary-origin (%ld,%ld) -> bounding-box-relative (%ld,%ld)\n",
+               (long)pts[0], (long)pts[1], (long)(pts[0] - smx), (long)(pts[1] - smy));
+        pts[0] -= smx; pts[1] -= smy;
+        if (mode == 1) { pts[2] -= smx; pts[3] -= smy; }
+    }
+
     BOOL ok;
     if (mode == 0) {           /* click */
         ok = inject_single_click(dev, pts[0], pts[1]);
@@ -560,14 +583,18 @@ static void usage(void)
 "                                 (default pmv2; 'none' leaves process default)\n"
 "  --feedback indirect|default|none    touch visualization (default indirect,\n"
 "                                 which FORCES visible circles - good for judging)\n"
+"  --raw                  treat X/Y as raw bounding-box-relative values (default:\n"
+"                                 X/Y are primary-origin screen coords, converted\n"
+"                                 internally by subtracting SM_X/YVIRTUALSCREEN,\n"
+"                                 per the measured coordinate verdict)\n"
 "  --qpc                  provide PerformanceCount timestamps (advanced;\n"
 "                         once started they must continue until all UP)\n"
 "  --delay MS             frame delay (default 8 ms)\n"
 "\n"
 "Experiments resolve (see README.md for the verdict tables):\n"
-"  origin : is (0,0) the primary monitor or the virtual-screen bounding box?\n"
-"  dpi    : is the injected coordinate interpreted in the calling thread's\n"
-"           DPI space (physical under PMv2, virtualized under unaware)?\n");
+"  origin : MEASURED - bounding-box upper-left (SM_X/YVIRTUALSCREEN),\n"
+"           NOT the primary monitor (0,0)\n"
+"  dpi    : MEASURED - physical pixels as-is, thread awareness ignored.\n");
 }
 
 int main(int argc, char** argv)
@@ -606,6 +633,8 @@ int main(int argc, char** argv)
                          !strcmp(f, "none")    ? FEEDBACK_NONE : FEEDBACK_INDIRECT;
         } else if (!strcmp(argv[i], "--qpc")) {
             g_useQpc = TRUE;
+        } else if (!strcmp(argv[i], "--raw")) {
+            g_rawCoord = TRUE;   /* feed API raw bounding-box-relative coords */
         } else if (!strcmp(argv[i], "--delay") && NEXT()) {
             g_frameDelayMs = atoi(argv[i]);
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {

@@ -25,7 +25,7 @@ gcc -O2 -Wall -o probe.exe synthetic_pointer_probe.c -luser32
 无需 shcore.lib（`GetDpiForMonitor` 动态加载）。运行环境需 Windows 10 1809+；
 更低版本会打印 `[fatal]` 并退出，不会崩溃。
 
-## 实验 A：坐标系原点判别（双屏）
+## 实验 A：坐标系原点判别（双屏）——✅ 已实测裁决
 
 **前提**：至少两台显示器，最好把一台副屏摆在**主屏左侧或上方**（制造负坐标区）。
 
@@ -33,15 +33,19 @@ gcc -O2 -Wall -o probe.exe synthetic_pointer_probe.c -luser32
 probe.exe --test origin
 ```
 
-程序会打印虚拟屏 metrics 与每个显示器的矩形/DPI，然后向坐标系 `(5,5)` 注入
-一次完整点击（强制显示触摸可视化圆圈）。
+**实测裁决（2026-10-10，副屏在左侧布局）**：注入 (5,5) 的圆圈出现在**左侧副屏左上角**
+（物理 -1915,5 附近）——即坐标被解释为**相对虚拟屏包围盒左上角
+（SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN）的偏移**，而不是主屏原点 (0,0)。
 
-| 观察结果 | 结论 | 后续动作 |
-|---|---|---|
-| 圆圈出现在**主屏左上角**附近 | 原点 = 主屏左上角（官方术语体系裁决成立） | 直接使用屏幕坐标 |
-| 圆圈出现在左侧/上方**副屏** | 原点 = 虚拟屏包围盒左上角 | 注入坐标需减去 `SM_X/YVIRTUALSCREEN` 偏移 |
+| 假说 | 结果 |
+|---|---|
+| ~~原点 = 主屏左上角 (0,0)~~（官方术语体系推理） | **证伪**（(5,5) 落主屏才对，实际落副屏） |
+| **原点 = 包围盒左上角**（文档措辞字面义） | **实测成立** |
 
-## 实验 B：DPI 语义判别（单屏 150% 缩放最佳）
+换算公式：`注入坐标 = 目标点(主屏原点坐标系) - (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN)`。
+单屏时 SM 偏移 = 0，两种语义重合——这就是此坑长期不被发现的原因。
+
+## 实验 B：DPI 语义判别（单屏 150% 缩放最佳）——✅ 已实测裁决
 
 **前提**：单显示器，设置缩放为 **150%**（非 100%，否则无判别力）。
 
@@ -49,23 +53,30 @@ probe.exe --test origin
 probe.exe --test dpi --scale 150
 ```
 
-程序先自动对比两种线程上下文下 `GetSystemMetrics(SM_CXSCREEN)` 的值
-（unaware 上下文若返回缩小值，即可实锤"调用线程坐标空间"机制存在），
-随后用 **PMv2** 与 **unaware** 两种线程上下文各向 `(200,200)` 注入一次点击。
+**实测裁决（2026-10-10）**：
 
-| 观察结果 | 结论 |
-|---|---|
-| 两圆圈都在物理 (200,200) | API 直通物理像素，与 DPI awareness 无关 |
-| PMv2 圈在 (200,200)，unaware 圈在 (300,300) | 坐标空间跟随调用线程（官方机制推论成立）——**预期结果** |
-| 两圆圈都在 (300,300) | API 固定按逻辑像素解释（可能性极低） |
+| 证据 | 数值 | 含义 |
+|---|---|---|
+| PMv2 上下文 `SM_CXSCREEN` | 1920（物理） | 查询在 PMv2 下返回物理值 |
+| unaware 上下文 `SM_CXSCREEN` | **1280 = 1920/1.5** | 查询类 API 确实被虚拟化（机制存在） |
+| 两次注入圆圈位置 | **都落在 (200,200)，重合** | 注入坐标**不**被换算 |
+
+**结论**：注入是"写"方向，不走 "calling thread coordinate space" 虚拟化；
+`ptPixelLocation` 按物理像素直通，与线程/进程 DPI awareness 无关。
+读写不对称：`GetSystemMetrics` 虚拟化，`InjectSyntheticPointerInput` 不虚拟化。
 
 > 注：屏幕缩放比例以 `设置 > 系统 > 屏幕 > 缩放` 为准；`--scale` 只用于打印
 > 预期落点，不影响注入行为。
 
 ## 工具模式（回归测试复用）
 
+**坐标输入约定（按实测裁决设计）**：`--click/--stroke` 的 X/Y 是**主屏原点屏幕坐标**
+（与 `EnumDisplayMonitors`/`GetCursorPos` 同一空间），工具内部自动减去
+`SM_X/YVIRTUALSCREEN` 换算成 API 需要的包围盒偏移，控制台打印 `[convert]` 行；
+加 `--raw` 则按包围盒原始值直传。
+
 ```bat
-probe.exe --click 500 300                 :: 单击（默认触摸）
+probe.exe --click 500 300                 :: 单击（默认触摸，主屏原点坐标）
 probe.exe --click 500 300 --type pen      :: 笔尖单击
 probe.exe --stroke 100 100 900 600 --frames 40   :: 划线（笔迹管线测试）
 probe.exe --stroke ... --dpi unaware      :: 指定进程 DPI 上下文（默认 pmv2）
